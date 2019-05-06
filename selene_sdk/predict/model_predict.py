@@ -4,6 +4,8 @@ methods.
 """
 import math
 import os
+import itertools
+import random
 import warnings
 
 import numpy as np
@@ -30,6 +32,10 @@ from .predict_handlers import WriteRefAltHandler
 from ..sequences import Genome
 from ..utils import load_model_from_state_dict
 
+from torch.autograd import Variable
+from Bio import motifs
+from Bio.Alphabet import IUPAC
+import glob
 
 # TODO: MAKE THESE GENERIC:
 ISM_COLS = ["pos", "ref", "alt"]
@@ -217,6 +223,195 @@ class AnalyzeSequences(object):
             reporters.append(WriteRefAltHandler(*constructor_args))
         return reporters
 
+    def predict(self, batch_sequences):
+        """
+        Return model predictions for a batch of sequences.
+
+        Parameters
+        ----------
+        batch_sequences : numpy.ndarray
+            `batch_sequences` has the shape :math:`B \\times L \\times N`,
+            where :math:`B` is `batch_size`, :math:`L` is the sequence length,
+            :math:`N` is the size of the sequence type's alphabet.
+
+        Returns
+        -------
+        numpy.ndarray
+            The model predictions of shape :math:`B \\times F`, where :math:`F`
+            is the number of features (classes) the model predicts.
+
+        """
+        inputs = torch.Tensor(batch_sequences)
+        if self.use_cuda:
+            inputs = inputs.cuda()
+        with torch.no_grad():
+            inputs = Variable(inputs)
+            outputs = self.model.forward(inputs.transpose(1, 2))
+            return outputs.data.cpu().numpy()
+
+    def predict_filters(self, batch_sequences):
+        """
+        Return first-layer filter activations for a batch of sequences.
+        Parameters
+        ----------
+        batch_sequences : numpy.ndarray
+            `batch_sequences` has the shape :math:`B \\times L \\times N`,
+            where :math:`B` is `batch_size`, :math:`L` is the sequence length,
+            :math:`N` is the size of the sequence type's alphabet.
+        Returns
+        -------
+        numpy.ndarray
+            The model predictions of shape :math:`B \\times F`, where :math:`F`
+            is the number of features (classes) the model predicts.
+        """
+        inputs = torch.Tensor(batch_sequences)
+        if self.use_cuda:
+            inputs = inputs.cuda()
+        with torch.no_grad():
+            inputs = Variable(inputs)
+            outputs = self.model.first_conv(inputs.transpose(1, 2))
+            return outputs
+
+
+    def get_activation_sequences(self, activations, seqs, ids, threshold, filter_len=19):
+        if threshold is not None:
+            thresh = np.percentile(activations,threshold)
+        else:
+            thresh = 0.5*np.max(activations)
+        idxs = np.where(activations>thresh)
+        seqs_list = []
+        scores = []
+        id_list = []
+        for i, seq in enumerate(idxs[0]):
+            t_seq = seqs[seq]
+            t_loc = idxs[1][i]
+            motif_seq = t_seq[t_loc:(t_loc+filter_len)]
+            seqs_list.append(motif_seq)
+            scores.append(activations[seq][t_loc])
+            id_list.append(ids[seq])
+        return seqs_list, scores, id_list
+
+    def motif_analysis_from_file(self,
+                                 input_file,
+                                 output_dir,
+                                 activation_percentile=95,
+                                 filter_len=19,
+                                 weight=None):
+        """
+        Perform a feed forward filter analysis to all sequences in a FASTA file.
+
+        Parameters
+        ----------
+        input_file: str
+            The path to the FASTA file of sequences.
+        output_dir : str
+            The path to the output directory. Directories in the path will be
+            created if they do not currently exist.
+        activation_percentile : int, optional
+            Default is to use 0.5 times the maximum ativation value. If specified, this value
+            will be the percentile score of filter activations at which to threshold
+            values for inclusion in the position frequency matrix (PFM). Specify an integer.
+        filter_length : int, optional
+            Length of motif to construct. 
+            Should correspond to the length of the filter-layer convolutional filters.
+        weight : optional
+            If weight is anything except for None (default), then PFMs are created by
+            weighting the sequences by their activation scores. 
+
+        Returns
+        -------
+        None
+            Outputs data files from motif analysis to `output_dir`.
+
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        
+        fasta_file = pyfaidx.Fasta(input_file, duplicate_action="first")
+        if self.batch_size == 'all':
+            self.batch_size = len(list(fasta_file))
+        sequences = np.zeros((self.batch_size,
+                              self.sequence_length,
+                              len(self.reference_sequence.BASES_ARR)))
+        nucleotides = []
+        batch_ids = []
+        N = len(fasta_file.keys())
+        
+        for i, fasta_record in enumerate(random.sample(list(fasta_file),N)):
+            cur_sequence = str.upper(str(fasta_record))
+            if len(cur_sequence) < self.sequence_length:
+                cur_sequence = self._pad_sequence(cur_sequence)
+            elif len(cur_sequence) > self.sequence_length:
+                cur_sequence = self._truncate_sequence(cur_sequence)
+            cur_sequence_encoding = self.reference_sequence.sequence_to_encoding(cur_sequence)
+
+            if i and i % self.batch_size == 0:
+                preds = self.predict_filters(sequences)
+                for filt in range(preds.size()[1]):
+                    activations = preds[:,filt,:].data.cpu().numpy()
+                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, activation_percentile, filter_len)
+                    ofile = open(output_dir + "/filter_" + str(filt) + "_motifs.fasta", "w")
+                    for bb in range(len(activation_seqs)):
+                        ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
+                    ofile.close()
+                nucleotides = []
+                batch_ids = []
+
+            sequences[i % self.batch_size, :, :] = cur_sequence_encoding
+            batch_ids.append(fasta_record.name)
+            nucleotides.append(cur_sequence)
+
+        if i % self.batch_size != 0:
+            sequences = sequences[:i % self.batch_size + 1, :, :]
+            preds = self.predict_filters(sequences)
+            for filt in range(preds.size()[1]):
+                activations = preds[:,filt,:].data.cpu().numpy()
+                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, activation_percentile, filter_len)
+                ofile = open(os.path.join(output_dir, "filter_" + str(filt) + "_motifs.fasta"), "w")
+                for bb in range(len(activation_seqs)):
+                    ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
+                ofile.close()
+
+        fasta_file.close()
+
+        motif_files = glob.glob(os.path.join(output_dir,'*.fasta'))
+        meme_file = open(os.path.join(output_dir, "filter_motifs.meme"), "w")
+        meme_file.write("MEME version 4 \n\nALPHABET= ACGT \n\nstrands: + - \n\nBackground letter frequencies \nA 0.25 C 0.25 G 0.25 T 0.25 \n\n")
+        for i, fasta_in in enumerate(motif_files): 
+            if not 'motifs' in fasta_in:
+                continue
+            if not fasta_in.endswith(".fasta"):
+                continue
+            sequences=[]
+            scores=[]
+            try:
+                fasta_file = pyfaidx.Fasta(fasta_in, duplicate_action="first")
+            except:
+                continue                
+            for j, fasta_record in enumerate(fasta_file): 
+                sequences.append(str.upper(str(fasta_record)))
+                scores.append(float(fasta_record.long_name.split('score:',1)[1]))
+            fasta_file.close()
+            nameLogo=fasta_in.strip('fasta').strip('.') + "_seqLogo.png"
+            sequences_f=motifs.create(sequences,alphabet=IUPAC.ambiguous_dna)
+            sequences_f.weblogo(nameLogo[1:],format="png_print", stack_width="large", color_scheme="color_classic", show_errorbars=False, scale_width=False)
+            if weight is not None:
+                new_pwm = np.zeros((len(sequences_f.pwm['A']),4))
+                for k, seq in enumerate(sequences):
+                    encoding = self.reference_sequence.sequence_to_encoding(seq)
+                    new_pwm = new_pwm + encoding*scores[k]
+                new_pwm = new_pwm/np.sum(new_pwm,1)[:,None]
+                pwm = new_pwm
+            else:
+                pwm = np.column_stack((sequences_f.pwm['A'], sequences_f.pwm['C'], sequences_f.pwm['G'], sequences_f.pwm['T']))
+            meme_file.write("MOTIF conv_filter" + str(i) + "\n")
+            meme_file.write("letter-probability matrix: alength= 4 w= " + str(pwm.shape[0]) + " nsites= 0 E= 0" + "\n")
+            for row in range(pwm.shape[0]):
+                for nuc in range(4):
+                    meme_file.write(" " + '{:.4f}'.format(round(pwm[row,nuc],4)))
+                meme_file.write("\n")
+            meme_file.write("\n")    
+        meme_file.close()
+
     def get_predictions_for_fasta_file(self,
                                        input_path,
                                        output_dir,
@@ -260,51 +455,53 @@ class AnalyzeSequences(object):
 
         """
         os.makedirs(output_dir, exist_ok=True)
+        
+        fasta_files = os.listdir(input_path)
+        for ff, fasta_file in enumerate(fasta_files):
+            if not '.fa' in fasta_file:
+                continue
+            if '.fai' in fasta_file:
+                continue
+            _, filename = os.path.split(fasta_file)
+            output_prefix = '.'.join(filename.split('.')[:-1])
 
-        _, filename = os.path.split(input_path)
-        output_prefix = '.'.join(filename.split('.')[:-1])
+            reporter = self._initialize_reporters(
+                ["predictions"],
+                os.path.join(output_dir, output_prefix),
+                output_format,
+                ["index", "name"],
+                mode="prediction")[0]
+            fasta_file_handl = pyfaidx.Fasta(os.path.join(input_path,fasta_file))
+            sequences = np.zeros((self.batch_size,
+                                  self.sequence_length,
+                                  len(self.reference_sequence.BASES_ARR)))
+            batch_ids = []
+            for i, fasta_record in enumerate(fasta_file_handl):
+                cur_sequence = str(fasta_record)
 
-        reporter = self._initialize_reporters(
-            ["predictions"],
-            os.path.join(output_dir, output_prefix),
-            output_format,
-            ["index", "name"],
-            mode="prediction")[0]
-        fasta_file = pyfaidx.Fasta(input_path)
-        sequences = np.zeros((self.batch_size,
-                              self.sequence_length,
-                              len(self.reference_sequence.BASES_ARR)))
-        batch_ids = []
-        for i, fasta_record in enumerate(fasta_file):
-            cur_sequence = str(fasta_record)
+                if len(cur_sequence) < self.sequence_length:
+                    cur_sequence = self._pad_sequence(cur_sequence)
+                elif len(cur_sequence) > self.sequence_length:
+                    cur_sequence = self._truncate_sequence(cur_sequence)
 
-            if len(cur_sequence) < self.sequence_length:
-                cur_sequence = _pad_sequence(cur_sequence,
-                                             self.sequence_length,
-                                             self.reference_sequence.UNK_BASE)
-            elif len(cur_sequence) > self.sequence_length:
-                cur_sequence = _truncate_sequence(cur_sequence, self.sequence_length)
+                cur_sequence_encoding = self.reference_sequence.sequence_to_encoding(
+                    cur_sequence)
+                batch_ids.append([i, fasta_record.name])
 
-            cur_sequence_encoding = self.reference_sequence.sequence_to_encoding(
-                cur_sequence)
-            batch_ids.append([i, fasta_record.name])
+                if i and i % self.batch_size == 0:
+                    preds = self.predict(sequences)
+                    sequences = np.zeros((
+                        self.batch_size, *cur_sequence_encoding.shape))
+                    reporter.handle_batch_predictions(preds, batch_ids)
 
-            if i and i % self.batch_size == 0:
-                preds = predict(self.model, sequences, use_cuda=self.use_cuda)
-                sequences = np.zeros((
-                    self.batch_size, *cur_sequence_encoding.shape))
+                sequences[i % self.batch_size, :, :] = cur_sequence_encoding
+
+            if i % self.batch_size != 0:
+                sequences = sequences[:i % self.batch_size + 1, :, :]
+                preds = self.predict(sequences)
                 reporter.handle_batch_predictions(preds, batch_ids)
-
-            sequences[i % self.batch_size, :, :] = cur_sequence_encoding
-
-        if i % self.batch_size != 0:
-            sequences = sequences[:i % self.batch_size + 1, :, :]
-            preds = predict(self.model, sequences, use_cuda=self.use_cuda)
-            reporter.handle_batch_predictions(preds, batch_ids)
-
-        fasta_file.close()
-        reporter.write_to_file(close=True)
-
+            fasta_file_handl.close()
+            reporter.write_to_file(close=True)
 
     def in_silico_mutagenesis_predict(self,
                                       sequence,

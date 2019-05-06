@@ -1,7 +1,7 @@
 """
 This is the main module for Selene.
 """
-__all__ = ["sequences", "targets", "samplers", "utils",
+__all__ = ["sequences", "targets", "samplers", "utils", "layers",
            "predict", "interpret", "__version__"]
 
 from .version import __version__
