@@ -196,8 +196,12 @@ class H5Sampler(OnlineH5Sampler):
                 labs = []
                 for ll in seq_name: labs.append(ll.split('|')[1])
                 seq_name = '_'.join(labs) + "-" +str(random.randint(1,1e6))
-                self._save_datasets[self.mode].append(
-                    ['test', seq_name, retrieved_targets, self.get_sequence_from_encoding(retrieved_seq[:,0,:])])
+                if (len(retrieved_seq.shape)==3):
+                    self._save_datasets[self.mode].append(
+                        ['test', seq_name, retrieved_targets, self.get_sequence_from_encoding(retrieved_seq[:,0,:])])
+                elif (len(retrieved_seq.shape)==2):
+                    self._save_datasets[self.mode].append(
+                        ['test', seq_name, retrieved_targets, self.get_sequence_from_encoding(retrieved_seq[:,:])])
 
         return (retrieved_seq, retrieved_targets)
 
@@ -265,7 +269,10 @@ class H5Sampler(OnlineH5Sampler):
             if not retrieve_output:
                 continue
             seq, seq_targets = retrieve_output
-            sequences[n_samples_drawn, :, :] = seq[:,0,:]
+            if len(seq.shape) == 3:
+                sequences[n_samples_drawn, :, :] = seq[:,0,:]
+            elif len(seq.shape) == 2: 
+                sequences[n_samples_drawn, :, :] = seq
             targets[n_samples_drawn, :] = seq_targets
             n_samples_drawn += 1
         return (sequences, targets)

@@ -206,7 +206,9 @@ class TrainModel(object):
                               average_precision=average_precision_score),
                  write_weights=False,
                  filter_regularization=None,
-                 weight_regularization=None):
+                 weight_regularization=None,
+                 early_stopping_metric=None,
+                 patience=None):
         """
         Constructs a new `TrainModel` object.
         """
@@ -215,6 +217,8 @@ class TrainModel(object):
         self.criterion = loss_criterion
         self.filter_regularization = filter_regularization
         self.weight_regularization = weight_regularization
+        self.early_stopping_metric = early_stopping_metric
+        self.patience = patience
         self.optimizer = optimizer_class(
             self.model.parameters(), **optimizer_kwargs)
 
@@ -274,6 +278,13 @@ class TrainModel(object):
 
         self._start_step = 0
         self._min_loss = float("inf") # TODO: Should this be set when it is used later? Would need to if we want to train model 2x in one run.
+        if self.early_stopping_metric in ['accuracy', 'roc_auc', 'average_precision']:
+            self._early_stopping_placeholder = 0 
+        elif self.early_stopping_metric in ['loss']:
+            self._early_stopping_placeholder = float("inf")
+        else: 
+            print('Early stopping unavailable for specified metric. Please choose accuracy, roc_auc, average_precision, or loss')
+            self.early_stopping_metric = None
         if checkpoint_resume is not None:
             checkpoint = torch.load(
                 checkpoint_resume,
@@ -400,6 +411,9 @@ class TrainModel(object):
 
         """
         min_loss = self._min_loss
+        early_stopping_placeholder = self._early_stopping_placeholder
+        steps_patient = 0
+        stop_early = False
         scheduler = ReduceLROnPlateau(
             self.optimizer, 'max', patience=16, verbose=True,
             factor=0.8)
@@ -449,6 +463,7 @@ class TrainModel(object):
                 time_per_step = []
                 valid_scores = self.validate()
                 validation_loss = valid_scores["loss"]
+
                 self._train_logger.info(train_loss)
                 to_log = [str(validation_loss)]
                 for k in sorted(self._validation_metrics.metrics.keys()):
@@ -458,6 +473,26 @@ class TrainModel(object):
                         to_log.append("NA")
                 self._validation_logger.info("\t".join(to_log))
                 scheduler.step(math.ceil(validation_loss * 1000.0) / 1000.0)
+
+                if self.early_stopping_metric is not None:
+                    curr_early_stopping_value = valid_scores[self.early_stopping_metric]
+                    if self.early_stopping_metric in ['accuracy', 'roc_auc', 'average_precision']:
+                        if curr_early_stopping_value <= early_stopping_placeholder:
+                            steps_patient += 1
+                            if steps_patient >= self.patience:
+                                stop_early = True
+                                print('Reached maximum patience. Stopping early.')
+                        else:
+                            early_stopping_placeholder = curr_early_stopping_value
+
+                    elif self.early_stopping_metric in ['loss']:
+                        if curr_early_stopping_value >= early_stopping_placeholder:
+                            steps_patient += 1
+                            if steps_patient >= self.patience:
+                                stop_early = True
+                                print('Reached maximum patience. Stopping early.')
+                        else:
+                            early_stopping_placeholder = curr_early_stopping_value
 
                 if validation_loss < min_loss:
                     min_loss = validation_loss
@@ -478,6 +513,8 @@ class TrainModel(object):
 
                 logger.info("training loss: {0}".format(train_loss))
                 logger.info("validation loss: {0}".format(validation_loss))
+            if stop_early:
+                break
 
                 # Logging training and validation on same line requires 2 parsers or more complex parser.
                 # Separate logging of train/validate is just a grep for validation/train and then same parser.
@@ -576,14 +613,14 @@ class TrainModel(object):
             the validation set.
 
         """
-        average_loss, all_predictions = self._evaluate_on_data(
-            self._validation_data)
+        average_loss, all_predictions = self._evaluate_on_data(self._validation_data)
         average_scores = self._validation_metrics.update(all_predictions,
                                                          self._all_validation_targets)
         for name, score in average_scores.items():
             logger.info("validation {0}: {1}".format(name, score))
 
         average_scores["loss"] = average_loss
+        average_scores["accuracy"] = np.mean(self._all_validation_targets == np.round(all_predictions))
         return average_scores
 
     def evaluate(self):

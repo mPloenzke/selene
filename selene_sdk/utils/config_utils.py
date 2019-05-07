@@ -239,6 +239,10 @@ def execute(operations, configs, output_dir):
                 predict_info = configs["prediction"]
                 analyze_seqs.get_predictions_for_fasta_file(**predict_info)
 
+            if "motif_analysis" in configs:
+                motifs_info = configs["motif_analysis"]
+                analyze_seqs.motif_analysis_from_file(**motifs_info)
+
 
 def parse_configs_and_run(configs,
                           create_subdirectory=True,
