@@ -543,7 +543,6 @@ class TrainModel(object):
 
         inputs = Variable(inputs)
         targets = Variable(targets)
-
         predictions = self.model(inputs.transpose(1, 2))
         loss = self.criterion(predictions, targets)
         if self.weight_regularization is not None:

@@ -273,11 +273,8 @@ class AnalyzeSequences(object):
             return outputs
 
 
-    def get_activation_sequences(self, activations, seqs, ids, threshold, filter_len=19):
-        if threshold is not None:
-            thresh = np.percentile(activations,threshold)
-        else:
-            thresh = 0.5*np.max(activations)
+    def get_activation_sequences(self, activations, seqs, ids, filter_len=19):
+        thresh = 0.5*np.max(activations)
         idxs = np.where(activations>thresh)
         seqs_list = []
         scores = []
@@ -286,6 +283,8 @@ class AnalyzeSequences(object):
             t_seq = seqs[seq]
             t_loc = idxs[1][i]
             motif_seq = t_seq[t_loc:(t_loc+filter_len)]
+            if len(motif_seq) < filter_len: 
+                continue
             seqs_list.append(motif_seq)
             scores.append(activations[seq][t_loc])
             id_list.append(ids[seq])
@@ -294,7 +293,6 @@ class AnalyzeSequences(object):
     def motif_analysis_from_file(self,
                                  input_file,
                                  output_dir,
-                                 activation_percentile=95,
                                  filter_len=19,
                                  weight=None):
         """
@@ -348,7 +346,7 @@ class AnalyzeSequences(object):
                 preds = self.predict_filters(sequences)
                 for filt in range(preds.size()[1]):
                     activations = preds[:,filt,:].data.cpu().numpy()
-                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, activation_percentile, filter_len)
+                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len)
                     ofile = open(output_dir + "/filter_" + str(filt) + "_motifs.fasta", "w")
                     for bb in range(len(activation_seqs)):
                         ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
@@ -365,7 +363,7 @@ class AnalyzeSequences(object):
             preds = self.predict_filters(sequences)
             for filt in range(preds.size()[1]):
                 activations = preds[:,filt,:].data.cpu().numpy()
-                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, activation_percentile, filter_len)
+                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len)
                 ofile = open(os.path.join(output_dir, "filter_" + str(filt) + "_motifs.fasta"), "w")
                 for bb in range(len(activation_seqs)):
                     ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
