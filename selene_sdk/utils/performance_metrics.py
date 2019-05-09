@@ -97,8 +97,8 @@ def visualize_roc_curves(prediction,
     plt.ylabel('True Positive Rate')
     if fig_title:
         plt.title(fig_title)
-    plt.savefig(os.path.join(output_dir, "roc_curves.svg"),
-                format="svg",
+    plt.savefig(os.path.join(output_dir, "roc_curves.png"),
+                format="png",
                 dpi=dpi)
 
 
@@ -166,8 +166,8 @@ def visualize_precision_recall_curves(
     plt.ylabel('Precision')
     if fig_title:
         plt.title(fig_title)
-    plt.savefig(os.path.join(output_dir, "precision_recall_curves.svg"),
-                format="svg",
+    plt.savefig(os.path.join(output_dir, "precision_recall_curves.png"),
+                format="png",
                 dpi=dpi)
 
 

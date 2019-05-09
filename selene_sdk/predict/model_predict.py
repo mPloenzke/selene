@@ -273,7 +273,35 @@ class AnalyzeSequences(object):
             return outputs
 
 
-    def get_activation_sequences(self, activations, seqs, ids, filter_len=19):
+    def get_activation_sequences(self, activations, seqs, ids, filter_len=19, padding=False):
+        """
+        Extract sequences giving rise to maximum activations in first layer filters. Used to construct motifs.
+
+        Parameters
+        ----------
+        acticvations : tensor
+            Tensor of first layer filter activations.
+        seqs : list, str
+            List of nucleotide input sequences, generally from the test set.
+        ids : list, str
+            List of IDs for each sequence in seqs.
+        filter_length : int, optional
+            Length of motif to construct. 
+            Should correspond to the length of the filter-layer convolutional filters.
+        padding : bool
+            If True, extracted sequences are centered around the maximum activation value
+            per filter. This corresponds to "valid" padding in Keras and would be used
+            in the case when padding is added in the first layer convolutional filters
+            with the amount of padding equal to one-half the filter length. Alternatively,
+            when False, extracted sequences are extracted using the maximum activation
+            value as the starting index. This corresponds to not using padding.
+
+        Returns
+        -------
+        seqs_list, scores, id_list
+            Tuple of lists containing the nucleotide sequences, the associated activations, and their IDs.
+
+        """
         thresh = 0.5*np.max(activations)
         idxs = np.where(activations>thresh)
         seqs_list = []
@@ -282,7 +310,12 @@ class AnalyzeSequences(object):
         for i, seq in enumerate(idxs[0]):
             t_seq = seqs[seq]
             t_loc = idxs[1][i]
-            motif_seq = t_seq[t_loc:(t_loc+filter_len)]
+            if padding:
+                start_idx = max(0,t_loc-math.floor(filter_len/2))
+                end_idx = t_loc+math.ceil(filter_len/2)
+                motif_seq = t_seq[t_loc:(t_loc+filter_len)]
+            else:
+                motif_seq = t_seq[t_loc:(t_loc+filter_len)]
             if len(motif_seq) < filter_len: 
                 continue
             seqs_list.append(motif_seq)
@@ -294,7 +327,8 @@ class AnalyzeSequences(object):
                                  input_file,
                                  output_dir,
                                  filter_len=19,
-                                 weight=None):
+                                 weight=None,
+                                 padding=False):
         """
         Perform a feed forward filter analysis to all sequences in a FASTA file.
 
@@ -315,6 +349,13 @@ class AnalyzeSequences(object):
         weight : optional
             If weight is anything except for None (default), then PFMs are created by
             weighting the sequences by their activation scores. 
+        padding : bool
+            If True, extracted sequences are centered around the maximum activation value
+            per filter. This corresponds to "valid" padding in Keras and would be used
+            in the case when padding is added in the first layer convolutional filters
+            with the amount of padding equal to one-half the filter length. Alternatively,
+            when False, extracted sequences are extracted using the maximum activation
+            value as the starting index. This corresponds to not using padding.
 
         Returns
         -------
@@ -346,7 +387,7 @@ class AnalyzeSequences(object):
                 preds = self.predict_filters(sequences)
                 for filt in range(preds.size()[1]):
                     activations = preds[:,filt,:].data.cpu().numpy()
-                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len)
+                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len, padding)
                     ofile = open(output_dir + "/filter_" + str(filt) + "_motifs.fasta", "w")
                     for bb in range(len(activation_seqs)):
                         ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
@@ -363,7 +404,7 @@ class AnalyzeSequences(object):
             preds = self.predict_filters(sequences)
             for filt in range(preds.size()[1]):
                 activations = preds[:,filt,:].data.cpu().numpy()
-                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len)
+                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len, padding)
                 ofile = open(os.path.join(output_dir, "filter_" + str(filt) + "_motifs.fasta"), "w")
                 for bb in range(len(activation_seqs)):
                     ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")

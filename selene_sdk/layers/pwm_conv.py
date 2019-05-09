@@ -178,7 +178,7 @@ class deNovo_Conv1d(nn.Conv1d):
         {'A':0.25,'C':0.25,'G':0.25,'T':0.25} is default.
 
     """
-    def __init__(self, in_channels, out_channels, kernel_size, bg_probs={'A':0.25,'C':0.25,'G':0.25,'T':0.25},
+  def __init__(self, in_channels, out_channels, kernel_size, bg_probs={'A':0.25,'C':0.25,'G':0.25,'T':0.25},
                  stride=1, padding=0, dilation=1, groups=1, bias=True):
       super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, bias=bias)
 
@@ -189,7 +189,7 @@ class deNovo_Conv1d(nn.Conv1d):
       if torch.cuda.is_available():
         self.bg_tensor = self.bg_tensor.cuda()
 
-    def forward(self, input):
+  def forward(self, input):
       return pwmConv().apply(input, self.weight, self.bg_tensor, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
 class jaspar_Conv1d(nn.Conv1d):
@@ -207,13 +207,14 @@ class jaspar_Conv1d(nn.Conv1d):
         Small value to add to zero-probability values.
     trainable : bool
         Whether filters should be trainable (True) or fixed at annotations (False)
+    include_rc : bool
+        Should the reverse complements of the annotated motifs be included?
 
     """
-    def __init__(self, annotated_motifs_file, 
+  def __init__(self, annotated_motifs_file, 
                  bg_probs={'A':0.25,'C':0.25,'G':0.25,'T':0.25}, 
-                 pseudocount=.01, trainable=False,
+                 pseudocount=.01, trainable=False, include_rc=True,
                  stride=1, padding=0, dilation=1, groups=1, bias=True):
-
       self.bg_probs = [ v for v in bg_probs.values()]
       self.trainable = trainable
       # Load JASPAR annotated motifs
@@ -227,6 +228,9 @@ class jaspar_Conv1d(nn.Conv1d):
             d_pwm = m.counts.normalize(pseudocounts=pseudocount).log_odds(bg_probs)
           filters.append(np.matrix([d_pwm['A'], d_pwm['C'],d_pwm['G'],d_pwm['T']]))
           names.append(m.name)
+          if include_rc: 
+            filters.append(np.matrix([d_pwm['T'][::-1], d_pwm['G'][::-1],d_pwm['C'][::-1],d_pwm['A'][::-1]]))
+            names.append(m.name + "_RC")
       
       # Pad shorter motifs
       max_len = max([f.shape[1] for f in filters])
@@ -247,17 +251,14 @@ class jaspar_Conv1d(nn.Conv1d):
         if torch.cuda.is_available():
           self.bg_tensor = self.bg_tensor.cuda()
 
-      # Initialize weights to motifs
-      for i in range(len(filters)):
-        self.weight[i] = torch.from_numpy(filters[i])
+      # Initialize weights to annotated motifs and fix if desired (i.e. don't allow training of these weights)
+      for i, param in enumerate(self.parameters()):
+        if len(param.shape) > 1:
+          for j in range(len(filters)): param.data[j,:,:] = torch.from_numpy(filters[j]).requires_grad_(self.trainable)
+          if not self.trainable:
+            param = param.detach()
 
-      # Fix weights to annotated motifs if desired
-      if not trainable: 
-        for param in self.parameters(): 
-          if len(param.shape) > 1:
-            param.requires_grad = False
-
-    def forward(self, input):
+  def forward(self, input):
       if self.trainable:
         return pwmConv().apply(input, self.weight, self.bg_tensor, self.bias, self.stride, self.padding, self.dilation, self.groups)
       else:
