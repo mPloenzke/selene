@@ -717,7 +717,10 @@ class TrainModel(object):
         performance so far, will save the state to a `best_model_<filename>.txt`
         file as well.
 
-        Weights are written as a array.
+        Weights are transformed into position probability matrix (PPM) prior to writing.
+
+        This is done so that they may be compared with annotated motifs using a
+        motif comparison tool, e.g. Tomtom.
 
         Parameters
         ----------
