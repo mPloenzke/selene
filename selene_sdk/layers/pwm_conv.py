@@ -143,7 +143,8 @@ class pwmConv(torch.autograd.Function):
   """
   @staticmethod
   def forward(ctx, x, w, bg, bias, stride=1, padding=0, dilation=1, groups=1):
-    ppm = w.exp()
+    #ppm = w.exp()
+    ppm = w.clamp(1e-2)
     ppm = ppm.div(ppm.sum(dim=1,keepdim=True))
     ctx.save_for_backward(x, ppm, bg)
     pwm = ppm.double().div(bg).log2().float()
@@ -188,6 +189,7 @@ class deNovo_Conv1d(nn.Conv1d):
       self.bg_tensor = torch.from_numpy(bg_tensor)
       if torch.cuda.is_available():
         self.bg_tensor = self.bg_tensor.cuda()
+      self.trainable = True
 
   def forward(self, input):
       return pwmConv().apply(input, self.weight, self.bg_tensor, self.bias, self.stride, self.padding, self.dilation, self.groups)
@@ -239,8 +241,10 @@ class jaspar_Conv1d(nn.Conv1d):
           needed_buffer = (max_len - filters[i].shape[1])
           front_buffer = np.ceil(needed_buffer/2)
           back_buffer = (needed_buffer-front_buffer)
-          filters[i] = np.column_stack((np.zeros((4,front_buffer.astype(np.int64))),filters[i],np.zeros((4,back_buffer.astype(np.int64)))))
-
+          if self.trainable:
+            filters[i] = np.column_stack((np.zeros((4,front_buffer.astype(np.int64)))+np.array(self.bg_probs)[:,None],filters[i],np.zeros((4,back_buffer.astype(np.int64)))+np.array(self.bg_probs)[:,None]))
+          else:
+            filters[i] = np.column_stack((np.zeros((4,front_buffer.astype(np.int64))),filters[i],np.zeros((4,back_buffer.astype(np.int64)))))
       super().__init__(4, len(filters), max_len, stride, padding, dilation, bias=bias)
 
       if self.trainable:
@@ -252,11 +256,11 @@ class jaspar_Conv1d(nn.Conv1d):
           self.bg_tensor = self.bg_tensor.cuda()
 
       # Initialize weights to annotated motifs and fix if desired (i.e. don't allow training of these weights)
-      for i, param in enumerate(self.parameters()):
+      for i, param in enumerate(self.parameters()): 
         if len(param.shape) > 1:
           for j in range(len(filters)): param.data[j,:,:] = torch.from_numpy(filters[j]).requires_grad_(self.trainable)
           if not self.trainable:
-            param = param.detach()
+            param.requires_grad=False
 
   def forward(self, input):
       if self.trainable:

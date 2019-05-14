@@ -764,8 +764,16 @@ class TrainModel(object):
             meme_file.write("MEME version 4 \n\nALPHABET= ACGT \n\nstrands: + - \n\nBackground letter frequencies \nA 0.25 C 0.25 G 0.25 T 0.25 \n\n")
             for mot in range(data.shape[0]):
                 wts = data[mot,:,:]
-                ppm = np.exp(wts)
-                ppm = ppm/np.sum(ppm, axis=0, keepdims=True)
+                if hasattr(self.model.first_conv[0],'trainable'):
+                    if self.model.first_conv[0].trainable:
+                        #ppm = np.exp(wts)
+                        ppm = np.clip(wts,a_min=1e-2,a_max=None)
+                        ppm = ppm/np.sum(ppm, axis=0, keepdims=True)
+                    elif not self.model.first_conv[0].trainable:
+                        ppm = np.power(2,wts)*np.array(self.model.first_conv[0].bg_probs)[:,None]
+                else:
+                    ppm = np.exp(wts)
+                    ppm = ppm/np.sum(ppm, axis=0, keepdims=True)
                 ppm = np.transpose(ppm)
                 meme_file.write("MOTIF conv_filter" + str(mot) + "\n")
                 meme_file.write("letter-probability matrix: alength= 4 w= " + str(ppm.shape[0]) + " nsites= 0 E= 0" + "\n")

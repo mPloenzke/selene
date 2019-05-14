@@ -24,6 +24,25 @@ class Exponential_activation(nn.Module):
     def forward(self, input):
         return input.exp()
 
+class ReEF(nn.Module):
+    """
+    Rectified Exponential Function
+
+    Parameters
+    ----------
+    self : tensor
+        input tensor
+
+    Returns
+    -------
+    Activated tensor using rectified exponential 
+
+    """
+    def __init__(self):
+        super().__init__()
+    def forward(self, input):
+        return input.clamp(0).exp()
+
 class Polynomial_activation(nn.Module):
     """
     Polynomial activation function
