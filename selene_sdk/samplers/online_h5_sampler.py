@@ -27,6 +27,9 @@ class OnlineH5Sampler(Sampler, metaclass=ABCMeta):
         Path to H5 file with datasets stored.
     features : list(str)
         List of distinct features that we aim to predict.
+    weights : bool (optional)
+        Either False (default) or True denoting to use
+        weights array slot in the h5 file specified by file_path
     seed : int, optional
         Default is 436. Sets the random seed for sampling.
     mode : {'train', 'validate', 'test'}, optional
@@ -62,6 +65,7 @@ class OnlineH5Sampler(Sampler, metaclass=ABCMeta):
     def __init__(self,
                  file_path,
                  features,
+                 weights=False,
                  seed=436,
                  sequence_length=1001,
                  mode="train",
@@ -76,6 +80,7 @@ class OnlineH5Sampler(Sampler, metaclass=ABCMeta):
             save_datasets=save_datasets,
             output_dir=output_dir)
 
+        self.weights = weights
         self.seed = seed
         np.random.seed(self.seed)
         random.seed(self.seed + 1)
@@ -228,12 +233,13 @@ class OnlineH5Sampler(Sampler, metaclass=ABCMeta):
 
         n_batches = int(n_samples / batch_size)
         for _ in range(n_batches):
-            inputs, targets = self.sample(batch_size)
-            sequences_and_targets.append((inputs, targets))
-        targets_mat = np.vstack([t for (s, t) in sequences_and_targets])
+            inputs, targets, weights = self.sample(batch_size)
+            sequences_and_targets.append((inputs, targets, weights))
+        targets_mat = np.vstack([t for (s, t, u) in sequences_and_targets])
+        weights_mat = np.vstack([u for (s, t, u) in sequences_and_targets])
         if mode in self._save_datasets:
             self.save_dataset_to_file(mode, close_filehandle=True)
-        return sequences_and_targets, targets_mat
+        return sequences_and_targets, targets_mat, weights_mat
 
     def get_dataset_in_batches(self, mode, batch_size, n_samples=None):
         """

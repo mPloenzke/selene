@@ -12,8 +12,9 @@ from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
 
-
 logger = logging.getLogger("selene")
+
+from pdb import set_trace
 
 
 Metric = namedtuple("Metric", ["fn", "data"])
@@ -354,11 +355,15 @@ class PerformanceMetrics(object):
         """
         metric_scores = {}
         for name, metric in self.metrics.items():
-            avg_score, feature_scores = compute_score(
-                prediction, target, metric.fn,
-                report_gt_feature_n_positives=self.skip_threshold)
-            metric.data.append(feature_scores)
-            metric_scores[name] = avg_score
+            if name == 'count':
+                metric.data.append(np.sum(target,axis=0))
+                metric_scores[name] = np.sum(np.sum(target,axis=0))
+            else:
+                avg_score, feature_scores = compute_score(
+                    prediction, target, metric.fn,
+                    report_gt_feature_n_positives=self.skip_threshold)
+                metric.data.append(feature_scores)
+                metric_scores[name] = avg_score
         return metric_scores
 
     def visualize(self, prediction, target, output_dir, **kwargs):
@@ -433,7 +438,6 @@ class PerformanceMetrics(object):
                     feature_scores[feature] = None
                 else:
                     feature_scores[feature][name] = score
-
         metric_cols = [m for m in self.metrics.keys()]
         cols = '\t'.join(["class"] + metric_cols)
         with open(output_path, 'w+') as file_handle:

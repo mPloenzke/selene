@@ -22,7 +22,6 @@ from .utils import PerformanceMetrics
 
 logger = logging.getLogger("selene")
 
-
 def _metrics_logger(name, out_filepath):
     logger = logging.getLogger("{0}".format(name))
     logger.setLevel(logging.INFO)
@@ -203,7 +202,8 @@ class TrainModel(object):
                  logging_verbosity=2,
                  checkpoint_resume=None,
                  metrics=dict(roc_auc=roc_auc_score,
-                              average_precision=average_precision_score),
+                              average_precision=average_precision_score,
+                              count=len),
                  write_weights=False,
                  filter_regularization=None,
                  weight_regularization=None,
@@ -334,7 +334,7 @@ class TrainModel(object):
         """
         logger.info("Creating validation dataset.")
         t_i = time()
-        self._validation_data, self._all_validation_targets = \
+        self._validation_data, self._all_validation_targets, self._all_validation_weights = \
             self.sampler.get_validation_set(
                 self.batch_size, n_samples=n_samples)
         t_f = time()
@@ -355,7 +355,7 @@ class TrainModel(object):
         """
         logger.info("Creating test dataset.")
         t_i = time()
-        self._test_data, self._all_test_targets = \
+        self._test_data, self._all_test_targets, self._all_test_weights = \
             self.sampler.get_test_set(
                 self.batch_size, n_samples=self._n_test_samples)
         t_f = time()
@@ -396,14 +396,14 @@ class TrainModel(object):
 
         """
         t_i_sampling = time()
-        batch_sequences, batch_targets = self.sampler.sample(
+        batch_sequences, batch_targets, batch_weights = self.sampler.sample(
             batch_size=self.batch_size)
         t_f_sampling = time()
         logger.debug(
             ("[BATCH] Time to sample {0} examples: {1} s.").format(
                  self.batch_size,
                  t_f_sampling - t_i_sampling))
-        return (batch_sequences, batch_targets)
+        return (batch_sequences, batch_targets, batch_weights)
 
     def train_and_validate(self):
         """
@@ -533,18 +533,23 @@ class TrainModel(object):
         self.model.train()
         self.sampler.set_mode("train")
 
-        inputs, targets = self._get_batch()
+        inputs, targets, weights = self._get_batch()
         inputs = torch.Tensor(inputs)
         targets = torch.Tensor(targets)
+        weights = torch.Tensor(weights)
 
         if self.use_cuda:
             inputs = inputs.cuda()
             targets = targets.cuda()
+            weights = weights.cuda()
 
         inputs = Variable(inputs)
         targets = Variable(targets)
+        weights = Variable(weights)
+
         predictions = self.model(inputs.transpose(1, 2))
-        loss = self.criterion(predictions, targets)
+        #loss = self.criterion(predictions, targets)
+        loss = torch.mean(torch.mv(self.criterion(predictions, targets).t(),weights[:,0]))
         if self.weight_regularization is not None:
             loss += self._weight_regularization()
         if self.filter_regularization is not None:
@@ -577,21 +582,25 @@ class TrainModel(object):
         batch_losses = []
         all_predictions = []
 
-        for (inputs, targets) in data_in_batches:
+        for (inputs, targets, weights) in data_in_batches:
             inputs = torch.Tensor(inputs)
             targets = torch.Tensor(targets)
+            weights = torch.Tensor(weights)
 
             if self.use_cuda:
                 inputs = inputs.cuda()
                 targets = targets.cuda()
+                weights = weights.cuda()
 
             with torch.no_grad():
                 inputs = Variable(inputs)
                 targets = Variable(targets)
+                weights = Variable(weights)
 
                 predictions = self.model(
                     inputs.transpose(1, 2))
-                loss = self.criterion(predictions, targets)
+                #loss = self.criterion(predictions, targets)
+                loss = torch.mean(torch.mv(self.criterion(predictions, targets).t(),weights[:,0]))
 
                 all_predictions.append(
                     predictions.data.cpu().numpy())
@@ -636,6 +645,7 @@ class TrainModel(object):
         """
         if self._test_data is None:
             self.create_test_set()
+
         average_loss, all_predictions = self._evaluate_on_data(
             self._test_data)
 
@@ -710,7 +720,7 @@ class TrainModel(object):
             shutil.copyfile("{0}.pth.tar".format(cp_filepath),
                             "{0}.pth.tar".format(best_filepath))
 
-    def _write_weights(self, state, is_best, filename="filter_weights"):
+    def _write_weights(self, state, is_best, filename="filter_weights", write_offsets=True):
         """
         Saves snapshot of the model weights to file. Will save a file
         with name `<filename>.txt` and, if this is the model's best
@@ -736,7 +746,8 @@ class TrainModel(object):
             Default is "filter_weights". Specify the weights filename. Will
             append a file extension to the end of the `filename`
             (e.g. filter_weights.txt`).
-
+        write_offsets : bool    
+            Whether to write associated filter offsets 
         Returns
         -------
         None
@@ -760,6 +771,11 @@ class TrainModel(object):
                 for data_slice in data:
                     np.savetxt(outfile, data_slice, fmt='%-7.2f')
                     outfile.write('# New slice\n')
+            if write_offsets:
+                offsets = list(mydict.values())[1].cpu().numpy()
+                best_bias_filepath = os.path.join(self.output_dir, "best_model_" + 'filter_offsets')
+                with open(best_bias_filepath + '.txt' , 'w') as biasfile:
+                    np.savetxt(biasfile, offsets, fmt='%-7.4f')
             meme_file = open(os.path.join(self.output_dir, "best_model_" + filename + ".meme"),"w")
             meme_file.write("MEME version 4 \n\nALPHABET= ACGT \n\nstrands: + - \n\nBackground letter frequencies \nA 0.25 C 0.25 G 0.25 T 0.25 \n\n")
             for mot in range(data.shape[0]):

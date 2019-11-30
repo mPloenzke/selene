@@ -273,13 +273,13 @@ class AnalyzeSequences(object):
             return outputs
 
 
-    def get_activation_sequences(self, activations, seqs, ids, filter_len=19, padding=False):
+    def get_activation_sequences(self, activations, seqs, ids, filter_len=19, padding=False, threshold=.5):
         """
         Extract sequences giving rise to maximum activations in first layer filters. Used to construct motifs.
 
         Parameters
         ----------
-        acticvations : tensor
+        activations : tensor
             Tensor of first layer filter activations.
         seqs : list, str
             List of nucleotide input sequences, generally from the test set.
@@ -302,14 +302,18 @@ class AnalyzeSequences(object):
             Tuple of lists containing the nucleotide sequences, the associated activations, and their IDs.
 
         """
-        thresh = 0.5*np.max(activations)
-        idxs = np.where(activations>thresh)
+        #thresh = np.percentile(activations, 95)
+        thresh = threshold*np.max(activations)
+        seqmax_activations = np.amax(activations,axis=1)
+        #idxs = np.where(activations>thresh)
+        idxs = np.where(seqmax_activations>thresh)
         seqs_list = []
         scores = []
         id_list = []
         for i, seq in enumerate(idxs[0]):
             t_seq = seqs[seq]
-            t_loc = idxs[1][i]
+            #t_loc = idxs[1][i]
+            t_loc = np.where(activations[seq]==seqmax_activations[seq])[0][0]
             if padding:
                 start_idx = max(0,t_loc-math.floor(filter_len/2))
                 end_idx = t_loc+math.ceil(filter_len/2)
@@ -319,16 +323,48 @@ class AnalyzeSequences(object):
             if len(motif_seq) < filter_len: 
                 continue
             seqs_list.append(motif_seq)
-            scores.append(activations[seq][t_loc])
+            #scores.append(activations[seq][t_loc])
+            scores.append(seqmax_activations[seq])
             id_list.append(ids[seq])
         return seqs_list, scores, id_list
+
+    def clip_filters(self, W_filter, threshold=0.5, pad=3):
+        """
+        Set small values (noise) to zero in filter motif analysis
+
+        Parameters
+        ----------
+        W_filter : matrix
+            Position frequency matrix
+        threshold: real
+            Entropy threshold to zero out
+        pad : int
+            Padding around filter non-clipped elements
+
+        Returns
+        -------
+        W_clipped
+            Clipped PWM
+        """
+        W_filter = np.transpose(W_filter)
+        entropy = np.log2(4) + np.sum(W_filter*np.log2(W_filter+1e-7), axis=0) # shape is 1 x filter_length
+        index = np.where(entropy > threshold)[0]
+        if index.any():
+            start = np.maximum(np.min(index)-pad, 0)
+            end = np.minimum(np.max(index)+pad+1, W_filter.shape[1])
+            W_clipped = W_filter[:,start:end]
+        else:
+            W_clipped = W_filter
+        W_clipped = np.transpose(W_clipped)
+        return W_clipped
 
     def motif_analysis_from_file(self,
                                  input_file,
                                  output_dir,
                                  filter_len=19,
                                  weight=None,
-                                 padding=False):
+                                 padding=False,
+                                 threshold=.5):
         """
         Perform a feed forward filter analysis to all sequences in a FASTA file.
 
@@ -374,8 +410,9 @@ class AnalyzeSequences(object):
         nucleotides = []
         batch_ids = []
         N = len(fasta_file.keys())
-        
+
         for i, fasta_record in enumerate(random.sample(list(fasta_file),N)):
+
             cur_sequence = str.upper(str(fasta_record))
             if len(cur_sequence) < self.sequence_length:
                 cur_sequence = self._pad_sequence(cur_sequence)
@@ -387,10 +424,10 @@ class AnalyzeSequences(object):
                 preds = self.predict_filters(sequences)
                 for filt in range(preds.size()[1]):
                     activations = preds[:,filt,:].data.cpu().numpy()
-                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len, padding)
+                    activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len, padding, threshold)
                     ofile = open(output_dir + "/filter_" + str(filt) + "_motifs.fasta", "w")
                     for bb in range(len(activation_seqs)):
-                        ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
+                        ofile.write(">" + "seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
                     ofile.close()
                 nucleotides = []
                 batch_ids = []
@@ -404,12 +441,11 @@ class AnalyzeSequences(object):
             preds = self.predict_filters(sequences)
             for filt in range(preds.size()[1]):
                 activations = preds[:,filt,:].data.cpu().numpy()
-                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len, padding)
+                activation_seqs, activation_scores, activation_ids = self.get_activation_sequences(activations, nucleotides, batch_ids, filter_len, padding, threshold)
                 ofile = open(os.path.join(output_dir, "filter_" + str(filt) + "_motifs.fasta"), "w")
                 for bb in range(len(activation_seqs)):
-                    ofile.write(">" + " seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
+                    ofile.write(">" + "seq:" + activation_ids[bb] + " score:" + str(activation_scores[bb]) + "\n" + activation_seqs[bb] + "\n")
                 ofile.close()
-
         fasta_file.close()
 
         motif_files = glob.glob(os.path.join(output_dir,'*.fasta'))
@@ -429,20 +465,21 @@ class AnalyzeSequences(object):
             for j, fasta_record in enumerate(fasta_file): 
                 sequences.append(str.upper(str(fasta_record)))
                 scores.append(float(fasta_record.long_name.split('score:',1)[1]))
+            
             fasta_file.close()
             nameLogo=fasta_in.strip('fasta').strip('.') + "_seqLogo.png"
             sequences_f=motifs.create(sequences,alphabet=IUPAC.ambiguous_dna)
-            sequences_f.weblogo(nameLogo[1:],format="png_print", stack_width="large", color_scheme="color_classic", show_errorbars=False, scale_width=False)
-            if weight is not None:
-                new_pwm = np.zeros((len(sequences_f.pwm['A']),4))
-                for k, seq in enumerate(sequences):
-                    encoding = self.reference_sequence.sequence_to_encoding(seq)
-                    new_pwm = new_pwm + encoding*scores[k]
-                new_pwm = new_pwm/np.sum(new_pwm,1)[:,None]
-                pwm = new_pwm
-            else:
-                pwm = np.column_stack((sequences_f.pwm['A'], sequences_f.pwm['C'], sequences_f.pwm['G'], sequences_f.pwm['T']))
-            meme_file.write("MOTIF conv_filter" + str(i) + "\n")
+            sequences_f.weblogo(nameLogo[1:],format="png_print", stack_width="large", color_scheme="color_classic", show_errorbars=False, scale_width=False)            
+            if weight is None:
+                scores = [i * 0+1 for i in scores]
+            new_pwm = np.zeros((len(sequences_f.pwm['A']),4))
+            for k, seq in enumerate(sequences):
+                encoding = self.reference_sequence.sequence_to_encoding(seq)
+                new_pwm = new_pwm + encoding*scores[k]
+            new_pwm = self.clip_filters(new_pwm)
+            pwm = new_pwm/np.sum(new_pwm,1)[:,None]
+            #pwm = np.column_stack((sequences_f.pwm['A'], sequences_f.pwm['C'], sequences_f.pwm['G'], sequences_f.pwm['T']))
+            meme_file.write("MOTIF conv_filter" + str(fasta_in.split('/')[-1].split('_')[1]) + "\n")
             meme_file.write("letter-probability matrix: alength= 4 w= " + str(pwm.shape[0]) + " nsites= 0 E= 0" + "\n")
             for row in range(pwm.shape[0]):
                 for nuc in range(4):
@@ -450,6 +487,50 @@ class AnalyzeSequences(object):
                 meme_file.write("\n")
             meme_file.write("\n")    
         meme_file.close()
+
+    def activation_maps_from_file(self,
+                                 input_file,
+                                 output_dir):
+        """
+        Perform a feed forward pass with first-layer convolutional filters to sequences from a FASTA file.
+
+        Parameters
+        ----------
+        input_file: str
+            The path to the FASTA file of sequences.
+        output_dir : str
+            The path to the output directory. Directories in the path will be
+            created if they do not currently exist.
+
+        Returns
+        -------
+        None
+            Outputs data files from motif analysis to `output_dir`.
+
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        fasta_file = pyfaidx.Fasta(input_file, duplicate_action="first")
+        for i, fasta_record in enumerate(list(fasta_file)):
+            cur_sequence = str.upper(str(fasta_record))
+            cur_sequence_encoding = self.reference_sequence.sequence_to_encoding(cur_sequence)
+            
+            single_sequence = np.zeros((1,cur_sequence_encoding.shape[0],len(self.reference_sequence.BASES_ARR)))
+            single_sequence[0, :, :] = cur_sequence_encoding
+            single_preds = np.squeeze(self.predict_filters(single_sequence).data.cpu().numpy())
+            if single_preds.shape[1] < len(cur_sequence):
+                needed_zeros = (len(cur_sequence)-single_preds.shape[1])//2
+                zero_dd = np.zeros((needed_zeros,len(self.reference_sequence.BASES_ARR)))
+                zero_dd_back = np.zeros((needed_zeros+(len(cur_sequence)-single_preds.shape[1])%2,len(self.reference_sequence.BASES_ARR)))
+                my_cur_sequence_encoding = np.vstack((zero_dd,cur_sequence_encoding,zero_dd_back))
+                single_sequence = np.zeros((1,my_cur_sequence_encoding.shape[0],len(self.reference_sequence.BASES_ARR)))
+                single_sequence[0, :, :] = my_cur_sequence_encoding
+                single_preds = np.squeeze(self.predict_filters(single_sequence).data.cpu().numpy())
+            ofile = open(output_dir + '/' + str(fasta_record.name) + ".txt", "w")
+            ofile.write(str.upper(str(fasta_record)) + "\n")
+            for i in range(self.sequence_length):
+                ofile.write(", ".join(str(item) for item in single_preds[:,i]) + "\n")
+            ofile.close()
 
     def get_predictions_for_fasta_file(self,
                                        input_path,

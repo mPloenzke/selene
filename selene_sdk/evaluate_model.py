@@ -13,7 +13,6 @@ from .utils import initialize_logger
 from .utils import load_model_from_state_dict
 from .utils import PerformanceMetrics
 
-
 logger = logging.getLogger("selene")
 
 
@@ -174,7 +173,7 @@ class EvaluateModel(object):
                 all_predictions.append(predictions.data.cpu().numpy())
                 batch_losses.append(loss.item())
         all_predictions = np.vstack(all_predictions)
-
+        
         average_scores = self._metrics.update(
             all_predictions, self._all_test_targets)
 

@@ -13,7 +13,6 @@ import torch
 
 from . import instantiate
 
-
 def module_from_file(path):
     """
     Load a module created based on a Python file path.
@@ -172,6 +171,7 @@ def execute(operations, configs, output_dir):
                 train_model_info.bind(output_dir=output_dir)
 
             trainer = instantiate(train_model_info)
+            #set_trace()
             # TODO: will find a better way to handle this in the future
             if "load_test_set" in configs and configs["load_test_set"] and \
                     "evaluate" in operations:
@@ -242,6 +242,10 @@ def execute(operations, configs, output_dir):
             if "motif_analysis" in configs:
                 motifs_info = configs["motif_analysis"]
                 analyze_seqs.motif_analysis_from_file(**motifs_info)
+
+            if "activation_maps" in configs:
+                activations_info = configs["activation_maps"]
+                analyze_seqs.activation_maps_from_file(**activations_info)
 
 
 def parse_configs_and_run(configs,

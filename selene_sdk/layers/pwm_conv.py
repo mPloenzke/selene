@@ -209,22 +209,25 @@ class jaspar_Conv1d(nn.Conv1d):
         Small value to add to zero-probability values.
     trainable : bool
         Whether filters should be trainable (True) or fixed at annotations (False)
+    pwm_restriction : bool
+        Should the weights be updated while maintaining the PWM construct?
     include_rc : bool
         Should the reverse complements of the annotated motifs be included?
 
     """
   def __init__(self, annotated_motifs_file, 
                  bg_probs={'A':0.25,'C':0.25,'G':0.25,'T':0.25}, 
-                 pseudocount=.01, trainable=False, include_rc=True,
+                 pseudocount=.01, trainable=False, pwm_restriction=True, include_rc=True,
                  stride=1, padding=0, dilation=1, groups=1, bias=True):
       self.bg_probs = [ v for v in bg_probs.values()]
       self.trainable = trainable
+      self.pwm_restriction = pwm_restriction
       # Load JASPAR annotated motifs
       filters = []
       names = []
       with open(annotated_motifs_file) as handle: 
-        for m in motifs.parse(handle, "jaspar"):
-          if self.trainable:
+        for m in motifs.parse(handle, "jaspar"): 
+          if self.trainable and self.pwm_restriction:
             d_pwm = m.counts.normalize(pseudocounts=pseudocount)
           else:
             d_pwm = m.counts.normalize(pseudocounts=pseudocount).log_odds(bg_probs)
@@ -241,13 +244,13 @@ class jaspar_Conv1d(nn.Conv1d):
           needed_buffer = (max_len - filters[i].shape[1])
           front_buffer = np.ceil(needed_buffer/2)
           back_buffer = (needed_buffer-front_buffer)
-          if self.trainable:
+          if self.trainable and self.pwm_restriction:
             filters[i] = np.column_stack((np.zeros((4,front_buffer.astype(np.int64)))+np.array(self.bg_probs)[:,None],filters[i],np.zeros((4,back_buffer.astype(np.int64)))+np.array(self.bg_probs)[:,None]))
           else:
             filters[i] = np.column_stack((np.zeros((4,front_buffer.astype(np.int64))),filters[i],np.zeros((4,back_buffer.astype(np.int64)))))
       super().__init__(4, len(filters), max_len, stride, padding, dilation, bias=bias)
 
-      if self.trainable:
+      if self.trainable and self.pwm_restriction:
         bg_array = [ v for v in bg_probs.values()]
         bg_matrix = np.repeat(np.reshape(np.array(bg_array),(-1,1)),max_len,axis=1)
         bg_tensor = np.repeat(np.reshape(bg_matrix,(1,4,max_len)),len(filters),axis=0)
@@ -263,7 +266,7 @@ class jaspar_Conv1d(nn.Conv1d):
             param.requires_grad=False
 
   def forward(self, input):
-      if self.trainable:
+      if self.trainable and self.pwm_restriction:
         return pwmConv().apply(input, self.weight, self.bg_tensor, self.bias, self.stride, self.padding, self.dilation, self.groups)
       else:
         return F.conv1d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)

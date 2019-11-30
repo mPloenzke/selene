@@ -16,7 +16,6 @@ from ..utils import get_indices_and_probabilities
 
 logger = logging.getLogger(__name__)
 
-
 SampleIndices = namedtuple(
     "SampleIndices", ["indices", "weights"])
 """
@@ -50,6 +49,9 @@ class H5Sampler(OnlineH5Sampler):
         Path to h5 (`*.h5`) file.
     features : list(str)
         List of distinct features that we aim to predict.
+    weights : bool (optional)
+        Either False (default) or True denoting to use
+        weights array slot in the h5 file specified by file_path
     seed : int, optional
         Default is 436. Sets the random seed for sampling.
     mode : {'train', 'validate', 'test'}
@@ -81,6 +83,7 @@ class H5Sampler(OnlineH5Sampler):
     def __init__(self,
                  file_path,
                  features,
+                 weights=False,
                  seed=436,
                  sequence_length=1000,
                  mode="train",
@@ -92,6 +95,7 @@ class H5Sampler(OnlineH5Sampler):
         super(H5Sampler, self).__init__(
             file_path,
             features,
+            weights=weights,
             seed=seed,
             sequence_length=sequence_length,
             mode=mode,
@@ -104,12 +108,12 @@ class H5Sampler(OnlineH5Sampler):
             self._sample_from_mode[mode] = None
             self._randcache[mode] = {"cache_indices": None, "sample_next": 0}
 
-        self._load_h5_dataset(file_path)
+        self._load_h5_dataset(file_path, weights=weights)
 
         for mode in self.modes:
             self._update_randcache(mode=mode)
 
-    def _load_h5_dataset(self, h5_path):
+    def _load_h5_dataset(self, h5_path, weights):
         """
         Holdout sets are created by extracting the saved datasets
         from the h5 file, this method is then used to store the data into
@@ -129,7 +133,15 @@ class H5Sampler(OnlineH5Sampler):
         y_valid = np.array(trainmat['Y_valid']).astype(np.int32)
         X_test = np.array(trainmat['X_test']).astype(np.float32)
         y_test = np.array(trainmat['Y_test']).astype(np.int32)
-
+        if weights:
+            w_train = np.array(trainmat['W_train']).astype(np.float32)
+            w_valid = np.array(trainmat['W_valid']).astype(np.float32)
+            w_test = np.array(trainmat['W_test']).astype(np.float32)
+        else:
+            w_train = np.ones((y_train.shape[0],1)).astype(np.float32)
+            w_valid = np.ones((y_valid.shape[0],1)).astype(np.float32)
+            w_test = np.ones((y_test.shape[0],1)).astype(np.float32)
+        # last dimension is nucleotides
         if (len(X_train.shape)==3):
             X_train = X_train.transpose([0,2,1])
             X_valid = X_valid.transpose([0,2,1])
@@ -141,9 +153,11 @@ class H5Sampler(OnlineH5Sampler):
         
         X_all = np.vstack((X_train, X_valid, X_test))
         y_all = np.vstack((y_train, y_valid, y_test))
+        w_all = np.vstack((w_train, w_valid, w_test))
 
         self.data = X_all
         self.target_mat = y_all
+        self.weights_mat = w_all
 
         n_sequences = X_all.shape[0]
         select_indices = list(range(n_sequences))
@@ -189,6 +203,7 @@ class H5Sampler(OnlineH5Sampler):
 
         retrieved_seq = self.data[rand_seq_index,:,:]
         retrieved_targets = self.target_mat[rand_seq_index,:]
+        retrieved_weights = self.weights_mat[rand_seq_index,:]
 
         if self.mode in self._save_datasets:
             if self.mode == 'test':
@@ -203,7 +218,7 @@ class H5Sampler(OnlineH5Sampler):
                     self._save_datasets[self.mode].append(
                         ['test', seq_name, retrieved_targets, self.get_sequence_from_encoding(retrieved_seq[:,:])])
 
-        return (retrieved_seq, retrieved_targets)
+        return (retrieved_seq, retrieved_targets, retrieved_weights)
 
     def _update_randcache(self, mode=None):
         """
@@ -254,6 +269,7 @@ class H5Sampler(OnlineH5Sampler):
         """
         sequences = np.zeros((batch_size, self.sequence_length, 4))
         targets = np.zeros((batch_size, self.n_features))
+        weights = np.zeros((batch_size, 1))
         n_samples_drawn = 0
         while n_samples_drawn < batch_size:
             sample_index = self._randcache[self.mode]["sample_next"]
@@ -268,11 +284,12 @@ class H5Sampler(OnlineH5Sampler):
             retrieve_output = self._retrieve(rand_seq_index)
             if not retrieve_output:
                 continue
-            seq, seq_targets = retrieve_output
+            seq, seq_targets, seq_weights = retrieve_output
             if len(seq.shape) == 3:
                 sequences[n_samples_drawn, :, :] = seq[:,0,:]
             elif len(seq.shape) == 2: 
                 sequences[n_samples_drawn, :, :] = seq
             targets[n_samples_drawn, :] = seq_targets
+            weights[n_samples_drawn, :] = seq_weights
             n_samples_drawn += 1
-        return (sequences, targets)
+        return (sequences, targets, weights)
